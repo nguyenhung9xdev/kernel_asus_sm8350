@@ -39,7 +39,7 @@
 #define BC_WLS_FW_UPDATE_STATUS_RESP	0x42
 #define BC_WLS_FW_PUSH_BUF_RESP		0x43
 #define BC_WLS_FW_GET_VERSION		0x44
-#define BC_SHUTDOWN_NOTIFY		0x47
+#define BC_SHUTDOWN_NOTIFY		0x47 //Add for CR2834394(case 0498778)
 #define BC_GENERIC_NOTIFY		0x80
 
 /* Generic definitions */
@@ -841,6 +841,12 @@ static int usb_psy_set_icl(struct battery_chg_dev *bcdev, u32 prop_id, int val)
 	 * port type. Also, clients like EUD driver can pass 0 or -22 to
 	 * suspend or unsuspend the input for its use case.
 	 */
+#if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT 	 
+	//[+++] ASUS_BSP : Skip to set ICL=2mA to avoid USBIN suspend
+		if (val == 2000)
+			val = 100000;//Limit the imin ICL to 100mA
+	//[---] ASUS_BSP : Skip to set ICL=2mA to avoid USBIN suspend
+#endif	
 
 	temp = val;
 	if (val < 0)
@@ -896,6 +902,9 @@ static int usb_psy_set_prop(struct power_supply *psy,
 
 	switch (prop) {
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+#if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT 	
+		printk(KERN_ERR "[BAT][CHG] INPUT_CURRENT_LIMIT. val : %d uA\n", pval->intval);//ASUS_BSP
+#endif		
 		rc = usb_psy_set_icl(bcdev, prop_id, pval->intval);
 		break;
 	default:
@@ -1016,13 +1025,6 @@ static int battery_psy_get_prop(struct power_supply *psy,
 
 	pval->intval = -ENODATA;
 
-	/*
-	 * The prop id of TIME_TO_FULL_NOW and TIME_TO_FULL_AVG is same.
-	 * So, map the prop id of TIME_TO_FULL_AVG for TIME_TO_FULL_NOW.
-	 */
-	if (prop == POWER_SUPPLY_PROP_TIME_TO_FULL_NOW)
-		prop = POWER_SUPPLY_PROP_TIME_TO_FULL_AVG;
-
 	prop_id = get_property_id(pst, prop);
 	if (prop_id < 0)
 		return prop_id;
@@ -1050,6 +1052,12 @@ static int battery_psy_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX:
 		pval->intval = bcdev->num_thermal_levels;
 		break;
+#if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
+	case POWER_SUPPLY_PROP_STATUS:
+		pval->intval = pst->prop[prop_id];
+		set_qc_stat(pval->intval);
+		break;		
+#endif
 	default:
 		pval->intval = pst->prop[prop_id];
 		break;
@@ -1107,7 +1115,6 @@ static enum power_supply_property battery_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_MODEL_NAME,
 	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
-	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG,
 	POWER_SUPPLY_PROP_POWER_NOW,
 	POWER_SUPPLY_PROP_POWER_AVG,
@@ -1829,12 +1836,13 @@ static int battery_chg_parse_dt(struct battery_chg_dev *bcdev)
 static int battery_chg_ship_mode(struct notifier_block *nb, unsigned long code,
 		void *unused)
 {
-	struct battery_charger_notify_msg msg_notify = { { 0 } };
+	struct battery_charger_notify_msg msg_notify = { { 0 } };//Add for CR2834394(case 0498778)
 	struct battery_charger_ship_mode_req_msg msg = { { 0 } };
 	struct battery_chg_dev *bcdev = container_of(nb, struct battery_chg_dev,
 						     reboot_notifier);
 	int rc;
 
+	//[+++] ASUS_BSP : Add for CR2834394(case 0498778)
 	msg_notify.hdr.owner = MSG_OWNER_BC;
 	msg_notify.hdr.type = MSG_TYPE_NOTIFY;
 	msg_notify.hdr.opcode = BC_SHUTDOWN_NOTIFY;
@@ -1842,6 +1850,7 @@ static int battery_chg_ship_mode(struct notifier_block *nb, unsigned long code,
 	rc = battery_chg_write(bcdev, &msg_notify, sizeof(msg_notify));
 	if (rc < 0)
 		pr_err("Failed to send shutdown notification rc=%d\n", rc);
+	//[---] ASUS_BSP : Add for CR2834394(case 0498778)
 
 	if (!bcdev->ship_mode_en)
 		return NOTIFY_DONE;
@@ -1950,7 +1959,6 @@ static int battery_chg_probe(struct platform_device *pdev)
 	battery_chg_add_debugfs(bcdev);
 	battery_chg_notify_enable(bcdev);
 	device_init_wakeup(bcdev->dev, true);
-	schedule_work(&bcdev->usb_type_work);
 
 	return 0;
 error:
@@ -1984,10 +1992,19 @@ static const struct of_device_id battery_chg_match_table[] = {
 	{},
 };
 
+#if 0 // defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
+static const struct dev_pm_ops asus_chg_pm_ops = {
+	.resume		= asus_chg_resume,
+};
+#endif
+
 static struct platform_driver battery_chg_driver = {
 	.driver = {
 		.name = "qti_battery_charger",
 		.of_match_table = battery_chg_match_table,
+#if 0 // defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
+		.pm	= &asus_chg_pm_ops,
+#endif
 	},
 	.probe = battery_chg_probe,
 	.remove = battery_chg_remove,
