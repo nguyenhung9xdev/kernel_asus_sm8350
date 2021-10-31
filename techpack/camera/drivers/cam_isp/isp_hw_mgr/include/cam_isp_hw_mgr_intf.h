@@ -234,7 +234,6 @@ enum cam_isp_hw_mgr_command {
 	CAM_ISP_HW_MGR_CMD_SOF_DEBUG,
 	CAM_ISP_HW_MGR_CMD_CTX_TYPE,
 	CAM_ISP_HW_MGR_GET_PACKET_OPCODE,
-	CAM_ISP_HW_MGR_GET_LAST_CDM_DONE,
 	CAM_ISP_HW_MGR_CMD_MAX,
 };
 
@@ -248,12 +247,11 @@ enum cam_isp_ctx_type {
 /**
  * struct cam_isp_hw_cmd_args - Payload for hw manager command
  *
- * @cmd_type:              HW command type
- * @cmd_data:              Command data
- * @sof_irq_enable:        To debug if SOF irq is enabled
- * @ctx_type:              RDI_ONLY, PIX and RDI, or FS2
- * @packet_op_code:        Packet opcode
- * @last_cdm_done:         Last cdm done request
+ * @cmd_type               HW command type
+ * @cmd_data               command data
+ * @sof_irq_enable         To debug if SOF irq is enabled
+ * @ctx_type               RDI_ONLY, PIX and RDI, or FS2
+ * @packet_op_code         packet opcode
  */
 struct cam_isp_hw_cmd_args {
 	uint32_t                          cmd_type;
@@ -262,7 +260,6 @@ struct cam_isp_hw_cmd_args {
 		uint32_t                      sof_irq_enable;
 		uint32_t                      ctx_type;
 		uint32_t                      packet_op_code;
-		uint64_t                      last_cdm_done;
 	} u;
 };
 

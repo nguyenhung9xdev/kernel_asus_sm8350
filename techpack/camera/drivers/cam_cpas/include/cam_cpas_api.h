@@ -37,6 +37,7 @@ enum cam_cpas_reg_base {
 	CAM_CPAS_REG_MAX
 };
 
+#if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
 /**
  * enum cam_cpas_hw_index  - Enum for identify HW index
  */
@@ -52,6 +53,7 @@ enum cam_cpas_hw_index {
 	CAM_CPAS_HW_IDX_7 = 1<<7,
 	CAM_CPAS_HW_IDX_MAX = 1<<8
 };
+#endif
 
 /**
  * enum cam_cpas_camera_version Enum for Titan Camera Versions
@@ -68,7 +70,6 @@ enum cam_cpas_camera_version {
 	CAM_CPAS_CAMERA_VERSION_545  = 0x00050405,
 	CAM_CPAS_CAMERA_VERSION_570  = 0x00050700,
 	CAM_CPAS_CAMERA_VERSION_680  = 0x00060800,
-	CAM_CPAS_CAMERA_VERSION_165  = 0x00010605,
 	CAM_CPAS_CAMERA_VERSION_MAX
 };
 
@@ -101,7 +102,6 @@ enum cam_cpas_camera_version_map_id {
 	CAM_CPAS_CAMERA_VERSION_ID_545  = 0x7,
 	CAM_CPAS_CAMERA_VERSION_ID_570  = 0x8,
 	CAM_CPAS_CAMERA_VERSION_ID_680  = 0x9,
-	CAM_CPAS_CAMERA_VERSION_ID_165  = 0xA,
 	CAM_CPAS_CAMERA_VERSION_ID_MAX
 };
 
@@ -125,7 +125,6 @@ enum cam_cpas_version_map_id {
 enum cam_cpas_hw_version {
 	CAM_CPAS_TITAN_NONE = 0,
 	CAM_CPAS_TITAN_150_V100 = 0x150100,
-	CAM_CPAS_TITAN_165_V100 = 0x165100,
 	CAM_CPAS_TITAN_170_V100 = 0x170100,
 	CAM_CPAS_TITAN_170_V110 = 0x170110,
 	CAM_CPAS_TITAN_170_V120 = 0x170120,
@@ -652,9 +651,13 @@ int cam_cpas_get_cpas_hw_version(
  * @return 1 if feature is supported
  *
  */
+#if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
 bool cam_cpas_is_feature_supported(uint32_t flag, uint32_t hw_map,
 	uint32_t *fuse_val);
-
+#else
+int cam_cpas_is_feature_supported(
+	uint32_t flag);
+#endif
 /**
  * cam_cpas_axi_util_path_type_to_string()
  *

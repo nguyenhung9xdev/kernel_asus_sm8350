@@ -35,18 +35,8 @@
 /* Mask to enable skew calibration registers */
 #define SKEW_CAL_MASK 0x2
 
-static DEFINE_MUTEX(active_csiphy_cnt_mutex);
-
 static int csiphy_dump;
 module_param(csiphy_dump, int, 0644);
-
-struct g_csiphy_data {
-	void __iomem *base_address;
-	uint8_t is_3phase;
-};
-
-static struct g_csiphy_data g_phy_data[MAX_CSIPHY] = {{0, 0}};
-static int active_csiphy_hw_cnt;
 
 int32_t cam_csiphy_get_instance_offset(
 	struct csiphy_device *csiphy_dev,
@@ -116,59 +106,6 @@ void cam_csiphy_reset(struct csiphy_device *csiphy_dev)
 			csiphy_dev->ctrl_reg->csiphy_reset_reg[i].delay,
 			csiphy_dev->ctrl_reg->csiphy_reset_reg[i].delay
 			+ 5);
-	}
-}
-
-static void cam_csiphy_prgm_cmn_data(
-	struct csiphy_device *csiphy_dev,
-	bool reset)
-{
-	int csiphy_idx = 0;
-	uint32_t size = 0;
-	int i = 0;
-	void __iomem *csiphybase;
-	bool is_3phase = false;
-	struct csiphy_reg_t *csiphy_common_reg = NULL;
-
-	size = csiphy_dev->ctrl_reg->csiphy_reg.csiphy_common_array_size;
-
-	if (active_csiphy_hw_cnt < 0 || active_csiphy_hw_cnt >= MAX_CSIPHY) {
-		CAM_WARN(CAM_CSIPHY,
-			"MisMatched in active phy hw: %d and Max supported: %d",
-			active_csiphy_hw_cnt, MAX_CSIPHY);
-		return;
-	}
-
-	if (active_csiphy_hw_cnt == 0) {
-		CAM_DBG(CAM_CSIPHY, "CSIPHYs HW state needs to be %s",
-			reset ? "reset" : "set");
-	} else {
-		CAM_DBG(CAM_CSIPHY, "Active CSIPHY hws are %d",
-			active_csiphy_hw_cnt);
-		return;
-	}
-
-	for (csiphy_idx = 0; csiphy_idx < MAX_CSIPHY; csiphy_idx++) {
-		csiphybase = g_phy_data[csiphy_idx].base_address;
-		is_3phase = g_phy_data[csiphy_idx].is_3phase;
-
-		for (i = 0; i < size; i++) {
-			csiphy_common_reg =
-				&csiphy_dev->ctrl_reg->csiphy_common_reg[i];
-			switch (csiphy_common_reg->csiphy_param_type) {
-			case CSIPHY_DEFAULT_PARAMS:
-				cam_io_w_mb(reset ? 0x00 :
-					csiphy_common_reg->reg_data,
-					csiphybase +
-					csiphy_common_reg->reg_addr);
-				break;
-			default:
-				break;
-			}
-			if (csiphy_common_reg->delay > 0)
-				usleep_range(csiphy_common_reg->delay,
-					csiphy_common_reg->delay + 5);
-		}
 	}
 }
 
@@ -1195,15 +1132,6 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 			goto release_mutex;
 		}
 
-		if (!csiphy_dev->acquire_count) {
-			g_phy_data[csiphy_dev->soc_info.index].is_3phase =
-					csiphy_acq_params.csiphy_3phase;
-			CAM_DBG(CAM_CSIPHY,
-					"g_csiphy data is updated for index: %d is_3phase: %u",
-					csiphy_dev->soc_info.index,
-					g_phy_data[csiphy_dev->soc_info.index].is_3phase);
-		}
-
 		csiphy_dev->acquire_count++;
 		CAM_DBG(CAM_CSIPHY, "ACQUIRE_CNT: %d",
 			csiphy_dev->acquire_count);
@@ -1248,6 +1176,12 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 			goto release_mutex;
 		}
 
+		CAM_INFO(CAM_CSIPHY,
+			"STOP_DEV: CSIPHY_IDX: %d, Device_slot: %d, Datarate: %llu, Settletime: %llu",
+			csiphy_dev->soc_info.index, offset,
+			csiphy_dev->csiphy_info[offset].data_rate,
+			csiphy_dev->csiphy_info[offset].settle_time);
+
 		if (--csiphy_dev->start_dev_count) {
 			CAM_DBG(CAM_CSIPHY, "Stop Dev ref Cnt: %d",
 				csiphy_dev->start_dev_count);
@@ -1275,15 +1209,6 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 
 		csiphy_dev->csiphy_info[offset].csiphy_cpas_cp_reg_mask = 0x0;
 
-		if (csiphy_dev->ctrl_reg->csiphy_reg
-			.prgm_cmn_reg_across_csiphy) {
-			mutex_lock(&active_csiphy_cnt_mutex);
-			active_csiphy_hw_cnt--;
-			mutex_unlock(&active_csiphy_cnt_mutex);
-
-			cam_csiphy_prgm_cmn_data(csiphy_dev, true);
-		}
-
 		rc = cam_csiphy_disable_hw(csiphy_dev);
 		if (rc < 0)
 			CAM_ERR(CAM_CSIPHY, "Failed in csiphy release");
@@ -1294,12 +1219,6 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 
 		CAM_DBG(CAM_CSIPHY, "All PHY devices stopped");
 		csiphy_dev->csiphy_state = CAM_CSIPHY_ACQUIRE;
-
-		CAM_INFO(CAM_CSIPHY,
-			"CAM_STOP_PHYDEV: CSIPHY_IDX: %d, Device_slot: %d, Datarate: %llu, Settletime: %llu",
-			csiphy_dev->soc_info.index, offset,
-			csiphy_dev->csiphy_info[offset].data_rate,
-			csiphy_dev->csiphy_info[offset].settle_time);
 	}
 		break;
 	case CAM_RELEASE_DEV: {
@@ -1408,6 +1327,13 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 			goto release_mutex;
 		}
 
+		CAM_INFO(CAM_CSIPHY,
+			"CAM_START_PHYDEV: CSIPHY_IDX: %d, Device_slot: %d, cp_mode: %d, Datarate: %llu, Settletime: %llu",
+			csiphy_dev->soc_info.index, offset,
+			csiphy_dev->csiphy_info[offset].secure_mode,
+			csiphy_dev->csiphy_info[offset].data_rate,
+			csiphy_dev->csiphy_info[offset].settle_time);
+
 		if (csiphy_dev->start_dev_count) {
 			clk_vote_level =
 				csiphy_dev->ctrl_reg->getclockvoting(
@@ -1422,9 +1348,14 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 			}
 
 			if (csiphy_dev->csiphy_info[offset].secure_mode == 1) {
+			    #if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
 				if (!cam_cpas_is_feature_supported(
 					CAM_CPAS_SECURE_CAMERA_ENABLE,
 					CAM_CPAS_HW_IDX_ANY, NULL)) {
+				#else
+				if (cam_cpas_is_feature_supported(
+					CAM_CPAS_SECURE_CAMERA_ENABLE) != 1) {
+				#endif	
 					CAM_ERR(CAM_CSIPHY,
 						"sec_cam: camera fuse bit not set");
 					goto release_mutex;
@@ -1487,9 +1418,14 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 		}
 
 		if (csiphy_dev->csiphy_info[offset].secure_mode == 1) {
+		    #if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
 			if (!cam_cpas_is_feature_supported(
 					CAM_CPAS_SECURE_CAMERA_ENABLE,
 					CAM_CPAS_HW_IDX_ANY, NULL)) {
+			#else
+			if (cam_cpas_is_feature_supported(
+					CAM_CPAS_SECURE_CAMERA_ENABLE) != 1) {
+			#endif		
 				CAM_ERR(CAM_CSIPHY,
 					"sec_cam: camera fuse bit not set");
 				cam_cpas_stop(csiphy_dev->cpas_handle);
@@ -1525,26 +1461,9 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 			goto release_mutex;
 		}
 		csiphy_dev->start_dev_count++;
-
-		if (csiphy_dev->ctrl_reg->csiphy_reg
-			.prgm_cmn_reg_across_csiphy) {
-			cam_csiphy_prgm_cmn_data(csiphy_dev, false);
-
-			mutex_lock(&active_csiphy_cnt_mutex);
-			active_csiphy_hw_cnt++;
-			mutex_unlock(&active_csiphy_cnt_mutex);
-		}
-
 		CAM_DBG(CAM_CSIPHY, "START DEV CNT: %d",
 			csiphy_dev->start_dev_count);
 		csiphy_dev->csiphy_state = CAM_CSIPHY_START;
-
-		CAM_INFO(CAM_CSIPHY,
-			"CAM_START_PHYDEV: CSIPHY_IDX: %d, Device_slot: %d, cp_mode: %d, Datarate: %llu, Settletime: %llu",
-			csiphy_dev->soc_info.index, offset,
-			csiphy_dev->csiphy_info[offset].secure_mode,
-			csiphy_dev->csiphy_info[offset].data_rate,
-			csiphy_dev->csiphy_info[offset].settle_time);
 	}
 		break;
 	case CAM_CONFIG_DEV_EXTERNAL: {
@@ -1570,21 +1489,4 @@ release_mutex:
 	mutex_unlock(&csiphy_dev->mutex);
 
 	return rc;
-}
-
-void cam_csiphy_register_baseaddress(struct csiphy_device *csiphy_dev)
-{
-	if (!csiphy_dev) {
-		CAM_WARN(CAM_CSIPHY, "Data is NULL");
-		return;
-	}
-
-	if (csiphy_dev->soc_info.index >= MAX_CSIPHY) {
-		CAM_ERR(CAM_CSIPHY, "Invalid soc index: %u Max soc index: %u",
-			csiphy_dev->soc_info.index, MAX_CSIPHY);
-		return;
-	}
-
-	g_phy_data[csiphy_dev->soc_info.index].base_address =
-		csiphy_dev->soc_info.reg_map[0].mem_base;
 }

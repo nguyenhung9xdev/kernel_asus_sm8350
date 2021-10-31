@@ -1774,7 +1774,6 @@ void cam_tfe_cam_cdm_callback(uint32_t handle, void *userdata,
 		(struct cam_tfe_hw_mgr_ctx *)hw_update_data->isp_mgr_ctx;
 		complete_all(&ctx->config_done_complete);
 		atomic_set(&ctx->cdm_done, 1);
-		ctx->last_cdm_done_req = cookie;
 		if (g_tfe_hw_mgr.debug_cfg.per_req_reg_dump)
 			cam_tfe_mgr_handle_reg_dump(ctx,
 				hw_update_data->reg_dump_buf_desc,
@@ -1892,7 +1891,6 @@ static int cam_tfe_mgr_acquire_hw(void *hw_mgr_priv, void *acquire_hw_args)
 	tfe_ctx->cdm_handle = cdm_acquire.handle;
 	tfe_ctx->cdm_ops = cdm_acquire.ops;
 	atomic_set(&tfe_ctx->cdm_done, 1);
-	tfe_ctx->last_cdm_done_req = 0;
 
 	acquire_hw_info = (struct cam_isp_tfe_acquire_hw_info *)
 		acquire_args->acquire_info;
@@ -2129,7 +2127,6 @@ static int cam_tfe_mgr_acquire_dev(void *hw_mgr_priv, void *acquire_hw_args)
 	tfe_ctx->cdm_handle = cdm_acquire.handle;
 	tfe_ctx->cdm_ops = cdm_acquire.ops;
 	atomic_set(&tfe_ctx->cdm_done, 1);
-	tfe_ctx->last_cdm_done_req = 0;
 
 	isp_resource = (struct cam_isp_resource *)acquire_args->acquire_info;
 
@@ -2443,7 +2440,6 @@ static int cam_tfe_mgr_config_hw(void *hw_mgr_priv,
 	struct cam_cdm_bl_request *cdm_cmd;
 	struct cam_tfe_hw_mgr_ctx *ctx;
 	struct cam_isp_prepare_hw_update_data *hw_update_data;
-	bool cdm_hang_detect = false;
 
 	if (!hw_mgr_priv || !config_hw_args) {
 		CAM_ERR(CAM_ISP, "Invalid arguments");
@@ -2466,31 +2462,6 @@ static int cam_tfe_mgr_config_hw(void *hw_mgr_priv,
 
 	hw_update_data = (struct cam_isp_prepare_hw_update_data  *) cfg->priv;
 	hw_update_data->isp_mgr_ctx = ctx;
-
-	if (cfg->reapply && cfg->cdm_reset_before_apply) {
-		if (ctx->last_cdm_done_req < cfg->request_id) {
-			cdm_hang_detect =
-				cam_cdm_detect_hang_error(ctx->cdm_handle);
-			CAM_ERR_RATE_LIMIT(CAM_ISP,
-				"CDM callback not received for req: %lld, last_cdm_done_req: %lld, cdm_hang_detect: %d",
-				cfg->request_id, ctx->last_cdm_done_req,
-				cdm_hang_detect);
-			rc = cam_cdm_reset_hw(ctx->cdm_handle);
-			if (rc) {
-				CAM_ERR_RATE_LIMIT(CAM_ISP,
-					"CDM reset unsuccessful for req: %lld, ctx: %d, rc: %d",
-					cfg->request_id, ctx->ctx_index, rc);
-				ctx->last_cdm_done_req = 0;
-				return rc;
-			}
-		} else {
-			CAM_ERR_RATE_LIMIT(CAM_ISP,
-				"CDM callback received, should wait for buf done for req: %lld",
-				cfg->request_id);
-			return -EALREADY;
-		}
-		ctx->last_cdm_done_req = 0;
-	}
 
 	for (i = 0; i < CAM_TFE_HW_NUM_MAX; i++) {
 		if (hw_update_data->bw_config_valid[i] == true) {
@@ -3010,12 +2981,11 @@ static int cam_tfe_mgr_start_hw(void *hw_mgr_priv, void *start_hw_args)
 	struct cam_isp_stop_args          stop_isp;
 	struct cam_tfe_hw_mgr_ctx        *ctx;
 	struct cam_isp_hw_mgr_res        *hw_mgr_res;
-	struct cam_hw_intf               *hw_intf;
-	uint32_t                          i;
+	struct cam_isp_resource_node     *rsrc_node = NULL;
+	uint32_t                          i, camif_debug;
 	bool                              res_rdi_context_set = false;
 	uint32_t                          primary_rdi_in_res;
 	uint32_t                          primary_rdi_out_res;
-	bool                              hw_id[CAM_TFE_HW_NUM_MAX] = {0};
 
 	primary_rdi_in_res = CAM_ISP_HW_TFE_IN_MAX;
 	primary_rdi_out_res = CAM_ISP_TFE_OUT_RES_MAX;
@@ -3048,40 +3018,31 @@ static int cam_tfe_mgr_start_hw(void *hw_mgr_priv, void *start_hw_args)
 	if (ctx->init_done && start_isp->start_only)
 		goto start_only;
 
-	list_for_each_entry(hw_mgr_res, &ctx->res_list_tfe_csid, list) {
-		for (i = 0; i < CAM_ISP_HW_SPLIT_MAX; i++) {
-			if (!hw_mgr_res->hw_res[i])
-				continue;
-
-			hw_intf = hw_mgr_res->hw_res[i]->hw_intf;
-			if (hw_id[hw_intf->hw_idx])
-				continue;
-
-			rc = hw_intf->hw_ops.process_cmd(
-				hw_intf->hw_priv,
+	/* set current csid debug information to CSID HW */
+	for (i = 0; i < CAM_TFE_CSID_HW_NUM_MAX; i++) {
+		if (g_tfe_hw_mgr.csid_devices[i])
+			rc = g_tfe_hw_mgr.csid_devices[i]->hw_ops.process_cmd(
+				g_tfe_hw_mgr.csid_devices[i]->hw_priv,
 				CAM_TFE_CSID_SET_CSID_DEBUG,
 				&g_tfe_hw_mgr.debug_cfg.csid_debug,
 				sizeof(g_tfe_hw_mgr.debug_cfg.csid_debug));
-			hw_id[hw_intf->hw_idx] = true;
-		}
 	}
 
-	memset(&hw_id[0], 0, sizeof(hw_id));
+	camif_debug = g_tfe_hw_mgr.debug_cfg.camif_debug;
 	list_for_each_entry(hw_mgr_res, &ctx->res_list_tfe_in, list) {
 		for (i = 0; i < CAM_ISP_HW_SPLIT_MAX; i++) {
 			if (!hw_mgr_res->hw_res[i])
 				continue;
 
-			hw_intf = hw_mgr_res->hw_res[i]->hw_intf;
-			if (hw_id[hw_intf->hw_idx])
-				continue;
-
-			rc = hw_intf->hw_ops.process_cmd(
-				hw_intf->hw_priv,
-				CAM_ISP_HW_CMD_SET_CAMIF_DEBUG,
-				&g_tfe_hw_mgr.debug_cfg.camif_debug,
-				sizeof(g_tfe_hw_mgr.debug_cfg.camif_debug));
-			hw_id[hw_intf->hw_idx] = true;
+			rsrc_node = hw_mgr_res->hw_res[i];
+			if (rsrc_node->process_cmd && (rsrc_node->res_id ==
+				CAM_ISP_HW_TFE_IN_CAMIF)) {
+				rc = hw_mgr_res->hw_res[i]->process_cmd(
+					hw_mgr_res->hw_res[i],
+					CAM_ISP_HW_CMD_SET_CAMIF_DEBUG,
+					&camif_debug,
+					sizeof(camif_debug));
+			}
 		}
 	}
 
@@ -3465,7 +3426,6 @@ static int cam_tfe_mgr_release_hw(void *hw_mgr_priv,
 	ctx->is_tpg  = false;
 	ctx->num_reg_dump_buf = 0;
 	ctx->res_list_tpg.res_type = CAM_ISP_RESOURCE_MAX;
-	ctx->last_cdm_done_req = 0;
 	atomic_set(&ctx->overflow_pending, 0);
 
 	for (i = 0; i < ctx->last_submit_bl_cmd.bl_count; i++) {
@@ -4758,10 +4718,6 @@ static int cam_tfe_mgr_cmd(void *hw_mgr_priv, void *cmd_args)
 				isp_hw_cmd_args->u.packet_op_code =
 				CAM_ISP_TFE_PACKET_CONFIG_DEV;
 			break;
-		case CAM_ISP_HW_MGR_GET_LAST_CDM_DONE:
-			isp_hw_cmd_args->u.last_cdm_done =
-				ctx->last_cdm_done_req;
-			break;
 		default:
 			CAM_ERR(CAM_ISP, "Invalid HW mgr command:0x%x",
 				hw_cmd_args->cmd_type);
@@ -5170,7 +5126,7 @@ static int  cam_tfe_hw_mgr_find_affected_ctx(
 		 */
 		if (notify_err_cb) {
 			notify_err_cb(tfe_hwr_mgr_ctx->common.cb_priv,
-			CAM_ISP_HW_EVENT_ERROR, (void *)error_event_data);
+			CAM_ISP_HW_EVENT_ERROR, error_event_data);
 		} else {
 			CAM_WARN(CAM_ISP, "Error call back is not set");
 			goto end;
@@ -5304,7 +5260,7 @@ static int cam_tfe_hw_mgr_handle_hw_rup(
 		if (atomic_read(&tfe_hw_mgr_ctx->overflow_pending))
 			break;
 		tfe_hwr_irq_rup_cb(tfe_hw_mgr_ctx->common.cb_priv,
-			CAM_ISP_HW_EVENT_REG_UPDATE, (void *)&rup_event_data);
+			CAM_ISP_HW_EVENT_REG_UPDATE, &rup_event_data);
 		break;
 
 	default:
@@ -5336,8 +5292,7 @@ static int cam_tfe_hw_mgr_handle_hw_epoch(
 		if (atomic_read(&tfe_hw_mgr_ctx->overflow_pending))
 			break;
 		tfe_hw_irq_epoch_cb(tfe_hw_mgr_ctx->common.cb_priv,
-			CAM_ISP_HW_EVENT_EPOCH,
-			(void *)&epoch_done_event_data);
+			CAM_ISP_HW_EVENT_EPOCH, &epoch_done_event_data);
 		break;
 
 	case CAM_ISP_HW_TFE_IN_RDI0:
@@ -5378,7 +5333,7 @@ static int cam_tfe_hw_mgr_handle_hw_sof(
 			break;
 
 		tfe_hw_irq_sof_cb(tfe_hw_mgr_ctx->common.cb_priv,
-			CAM_ISP_HW_EVENT_SOF, (void *)&sof_done_event_data);
+			CAM_ISP_HW_EVENT_SOF, &sof_done_event_data);
 
 		break;
 
@@ -5393,7 +5348,7 @@ static int cam_tfe_hw_mgr_handle_hw_sof(
 		if (atomic_read(&tfe_hw_mgr_ctx->overflow_pending))
 			break;
 		tfe_hw_irq_sof_cb(tfe_hw_mgr_ctx->common.cb_priv,
-			CAM_ISP_HW_EVENT_SOF, (void *)&sof_done_event_data);
+			CAM_ISP_HW_EVENT_SOF, &sof_done_event_data);
 		break;
 
 	default:
@@ -5424,7 +5379,7 @@ static int cam_tfe_hw_mgr_handle_hw_eof(
 		if (atomic_read(&tfe_hw_mgr_ctx->overflow_pending))
 			break;
 		tfe_hw_irq_eof_cb(tfe_hw_mgr_ctx->common.cb_priv,
-			CAM_ISP_HW_EVENT_EOF, (void *)&eof_done_event_data);
+			CAM_ISP_HW_EVENT_EOF, &eof_done_event_data);
 
 		break;
 
@@ -5467,7 +5422,7 @@ static int cam_tfe_hw_mgr_handle_hw_buf_done(
 	if (buf_done_event_data.num_handles > 0 && tfe_hwr_irq_wm_done_cb) {
 		CAM_DBG(CAM_ISP, "Notify ISP context");
 		tfe_hwr_irq_wm_done_cb(tfe_hw_mgr_ctx->common.cb_priv,
-			CAM_ISP_HW_EVENT_DONE, (void *)&buf_done_event_data);
+			CAM_ISP_HW_EVENT_DONE, &buf_done_event_data);
 	}
 
 	CAM_DBG(CAM_ISP, "Buf done for out_res->res_id: 0x%x",
@@ -5606,7 +5561,7 @@ static int cam_tfe_hw_mgr_debug_register(void)
 	int rc = 0;
 	struct dentry *dbgfileptr = NULL;
 
-	dbgfileptr = debugfs_create_dir("camera_tfe", NULL);
+	dbgfileptr = debugfs_create_dir("camera_ife", NULL);
 	if (!dbgfileptr) {
 		CAM_ERR(CAM_ISP,"DebugFS could not create directory!");
 		rc = -ENOENT;
