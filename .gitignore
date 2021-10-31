@@ -154,6 +154,7 @@ arch/*/configs/vendor/*_defconfig
 !arch/*/configs/vendor/SAKE*
 !arch/*/configs/vendor/VODKA*
 !arch/*/configs/vendor/VODKA*
+!arch/*/configs/vendor/ZS673KS*
 
 # Ignore the generated defconfig report.
 generate_defconfig.txt
