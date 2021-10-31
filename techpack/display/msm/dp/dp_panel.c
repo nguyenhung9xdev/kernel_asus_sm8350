@@ -9,7 +9,6 @@
 #include "dp_debug.h"
 #include <drm/drm_dsc.h>
 #include "sde_dsc_helper.h"
-#include <drm/drm_edid.h>
 
 #define DP_KHZ_TO_HZ 1000
 #define DP_PANEL_DEFAULT_BPP 24
@@ -83,19 +82,19 @@ struct dp_panel_private {
 };
 
 static const struct dp_panel_info fail_safe = {
-	.h_active = 640,
-	.v_active = 480,
-	.h_back_porch = 48,
-	.h_front_porch = 16,
-	.h_sync_width = 96,
+	.h_active = 1920,
+	.v_active = 1080,
+	.h_back_porch = 148,
+	.h_front_porch = 88,
+	.h_sync_width = 44,
 	.h_active_low = 0,
-	.v_back_porch = 33,
-	.v_front_porch = 10,
-	.v_sync_width = 2,
+	.v_back_porch = 36,
+	.v_front_porch = 4,
+	.v_sync_width = 5,
 	.v_active_low = 0,
 	.h_skew = 0,
 	.refresh_rate = 60,
-	.pixel_clk_khz = 25200,
+	.pixel_clk_khz = 148500,
 	.bpp = 24,
 };
 
@@ -1358,28 +1357,9 @@ static int dp_panel_dsc_prepare_basic_params(
 	u32 ppr_per_slice;
 	u32 slice_caps_1;
 	u32 slice_caps_2;
-	u32 dsc_version_major, dsc_version_minor;
-	bool dsc_version_supported = false;
 
-	dsc_version_major = dp_panel->sink_dsc_caps.version & 0xF;
-	dsc_version_minor = (dp_panel->sink_dsc_caps.version >> 4) & 0xF;
-	dsc_version_supported = (dsc_version_major == 0x1 &&
-			(dsc_version_minor == 0x1 || dsc_version_minor == 0x2))
-			? true : false;
-
-	DP_DEBUG("DSC version: %d.%d, dpcd value: %x\n",
-			dsc_version_major, dsc_version_minor,
-			dp_panel->sink_dsc_caps.version);
-
-	if (!dsc_version_supported) {
-		dsc_version_major = 1;
-		dsc_version_minor = 1;
-		DP_ERR("invalid sink DSC version, fallback to %d.%d\n",
-				dsc_version_major, dsc_version_minor);
-	}
-
-	comp_info->dsc_info.config.dsc_version_major = dsc_version_major;
-	comp_info->dsc_info.config.dsc_version_minor = dsc_version_minor;
+	comp_info->dsc_info.config.dsc_version_major = 0x1;
+	comp_info->dsc_info.config.dsc_version_minor = 0x1;
 	comp_info->dsc_info.scr_rev = 0x0;
 
 	comp_info->dsc_info.slice_per_pkt = 0;
@@ -1471,6 +1451,7 @@ static int dp_panel_read_dpcd(struct dp_panel *dp_panel, bool multi_func)
 	struct drm_dp_aux *drm_aux;
 	u8 *dpcd, rx_feature, temp;
 	u32 dfp_count = 0, offset = DP_DPCD_REV;
+	int dpcd_retry = 3; /* ASUS BSP Display +++ */
 
 	if (!dp_panel) {
 		DP_ERR("invalid input\n");
@@ -1494,12 +1475,24 @@ static int dp_panel_read_dpcd(struct dp_panel *dp_panel, bool multi_func)
 		goto skip_dpcd_read;
 	}
 
-	rlen = drm_dp_dpcd_read(drm_aux, DP_TRAINING_AUX_RD_INTERVAL, &temp, 1);
-	if (rlen != 1) {
-		DP_ERR("error reading DP_TRAINING_AUX_RD_INTERVAL\n");
-		rc = -EINVAL;
-		goto end;
-	}
+	/* ASUS BSP Display, fix TT#260414 +++ */
+	do {
+		rlen = drm_dp_dpcd_read(drm_aux, DP_TRAINING_AUX_RD_INTERVAL, &temp, 1);
+		if (rlen != 1) {
+			if (dpcd_retry > 1) {
+				DP_LOG("retry reading DP_TRAINING_AUX_RD_INTERVAL\n");
+				mdelay(70);
+			} else {
+				DP_ERR("error reading DP_TRAINING_AUX_RD_INTERVAL\n");
+				rc = -EINVAL;
+				goto end;
+			}
+		} else {
+			break;
+		}
+		dpcd_retry--;
+	} while (dpcd_retry > 0);
+	/* ASUS BSP Display --- */
 
 	/* check for EXTENDED_RECEIVER_CAPABILITY_FIELD_PRESENT */
 	if (temp & BIT(7)) {
@@ -1617,25 +1610,7 @@ static int dp_panel_set_default_link_params(struct dp_panel *dp_panel)
 	return 0;
 }
 
-static bool dp_panel_validate_edid(struct edid *edid, size_t edid_size)
-{
-	if (!edid || (edid_size < EDID_LENGTH))
-		return false;
-
-	if (EDID_LENGTH * (edid->extensions + 1) > edid_size) {
-		DP_ERR("edid size does not match allocated.\n");
-		return false;
-	}
-
-	if (!drm_edid_is_valid(edid)) {
-		DP_ERR("invalid edid.\n");
-		return false;
-	}
-	return true;
-}
-
-static int dp_panel_set_edid(struct dp_panel *dp_panel, u8 *edid,
-		size_t edid_size)
+static int dp_panel_set_edid(struct dp_panel *dp_panel, u8 *edid)
 {
 	struct dp_panel_private *panel;
 
@@ -1646,7 +1621,7 @@ static int dp_panel_set_edid(struct dp_panel *dp_panel, u8 *edid,
 
 	panel = container_of(dp_panel, struct dp_panel_private, dp_panel);
 
-	if (edid && dp_panel_validate_edid((struct edid *)edid, edid_size)) {
+	if (edid) {
 		dp_panel->edid_ctrl->edid = (struct edid *)edid;
 		panel->custom_edid = true;
 	} else {
@@ -1715,6 +1690,8 @@ end:
 	edid = dp_panel->edid_ctrl->edid;
 	dp_panel->audio_supported = drm_detect_monitor_audio(edid);
 
+	/* ASUS BSP Display +++ */
+	dp_asus_extract_id(dp_panel);
 	return ret;
 }
 
@@ -1887,6 +1864,11 @@ static u32 dp_panel_get_supported_bpp(struct dp_panel *dp_panel,
 		min_supported_bpp = 24;
 
 	bpp = min_t(u32, mode_edid_bpp, max_supported_bpp);
+
+	// TT#255578, TT#260643
+	if (mode_edid_bpp > max_supported_bpp || dp_asus_validate_24_bpp(dp_panel))
+		min_supported_bpp = 24;
+	/* ASUS BSP Display --- */
 
 	link_params = &panel->link->link_params;
 
@@ -2240,7 +2222,7 @@ static void dp_panel_config_dsc(struct dp_panel *dp_panel, bool enable)
 		dsc->be_in_lane = _dp_panel_calc_be_in_lane(dp_panel);
 		dsc->dsc_en = true;
 		dsc->dto_en = true;
-		dsc->continuous_pps = dp_panel->dsc_continuous_pps;
+
 		dp_panel_get_dto_params(comp_info->comp_ratio, &dsc->dto_n,
 				&dsc->dto_d, pinfo->bpp);
 	} else {
@@ -2248,7 +2230,6 @@ static void dp_panel_config_dsc(struct dp_panel *dp_panel, bool enable)
 		dsc->dto_en = false;
 		dsc->dto_n = 0;
 		dsc->dto_d = 0;
-		dsc->continuous_pps = false;
 	}
 
 	catalog->stream_id = dp_panel->stream_id;
@@ -3046,7 +3027,6 @@ struct dp_panel *dp_panel_get(struct dp_panel_in *in)
 
 	dp_panel->dsc_feature_enable = panel->parser->dsc_feature_enable;
 	dp_panel->fec_feature_enable = panel->parser->fec_feature_enable;
-	dp_panel->dsc_continuous_pps = panel->parser->dsc_continuous_pps;
 
 	if (in->base_panel) {
 		memcpy(dp_panel->dpcd, in->base_panel->dpcd,
@@ -3110,3 +3090,96 @@ void dp_panel_put(struct dp_panel *dp_panel)
 
 	devm_kfree(panel->dev, panel);
 }
+
+/* ASUS BSP Display +++ */
+#if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
+bool asus_is_hdmi = false;
+
+static bool dp_asus_is_hdmi_bridge(struct dp_panel *dp_panel)
+{
+	return (dp_panel->dpcd[DP_DOWNSTREAMPORT_PRESENT] &
+		0x15);
+}
+
+bool dp_asus_validate_24_bpp(struct dp_panel *dp_panel)
+{
+	if (!dp_panel->asus_vendor)
+		return false;
+
+	if (dp_asus_is_hdmi_bridge(dp_panel))
+		return true;
+
+#if 0
+	if (!strncmp(dp_panel->asus_vendor, "ACR", 3))
+
+	// fix TT#260643
+	if (!strncmp(dp_panel->asus_vendor, "ACI", 3))
+		return true;
+#endif
+
+	return false;
+}
+
+bool dp_asus_validate_mode(struct dp_panel *dp_panel,
+		struct drm_display_mode *mode)
+{
+	int min_supported_vrefresh = 60;
+	int max_supported_vrefresh = 144;
+	int max_supported_vrefresh_hdmi = 120;
+	bool status = false;
+
+	if (!dp_panel || !mode) {
+		DP_LOG("invalid params\n");
+		return status;
+	}
+
+	asus_is_hdmi = dp_asus_is_hdmi_bridge(dp_panel);
+
+	// fps limitation if hdmi bridge
+	if (asus_is_hdmi && (mode->vrefresh > max_supported_vrefresh_hdmi))
+		goto end;
+
+	// fps limitation
+	if ((!dp_panel->connector->under_60hz_allowed) &&
+			((mode->vrefresh < min_supported_vrefresh) ||
+			(mode->vrefresh > max_supported_vrefresh)))
+		goto end;
+
+	// monitor size must width > height
+	if (mode->vdisplay > mode->hdisplay)
+		goto end;
+
+	status = true;
+
+end:
+	// if wide aspect allowed, set asus_is_hdmi to false
+	if(dp_panel->connector->wide_aspect_allowed && asus_is_hdmi)
+		asus_is_hdmi = false;
+
+	return status;
+}
+
+void dp_asus_extract_id(struct dp_panel *dp_panel)
+{
+	struct edid *edid;
+
+	if (!dp_panel || !dp_panel->edid_ctrl) {
+		DP_LOG("invalid input\n");
+		return;
+	}
+
+	edid = dp_panel->edid_ctrl->edid;
+	if (!edid) {
+		DP_LOG("invalid parameter\n");
+		return;
+	}
+
+	dp_panel->asus_proc_codes = ((u32)edid->prod_code[1] << 4) +
+			(edid->prod_code[0] >> 4);
+	dp_panel->asus_vendor = dp_panel->edid_ctrl->vendor_id;
+
+	DP_LOG("vendor_id=%s, proc_codes=%x\n",
+		   dp_panel->asus_vendor, dp_panel->asus_proc_codes);
+}
+#endif
+/* ASUS BSP Display --- */

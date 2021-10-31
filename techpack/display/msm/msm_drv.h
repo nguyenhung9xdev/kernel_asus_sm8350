@@ -49,7 +49,9 @@
 #include <drm/drm_dsc.h>
 
 #include "sde_power_handle.h"
-
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+#include <drm/msm_drm_iris.h>
+#endif
 #define GET_MAJOR_REV(rev)		((rev) >> 28)
 #define GET_MINOR_REV(rev)		(((rev) >> 16) & 0xFFF)
 #define GET_STEP_REV(rev)		((rev) & 0xFFFF)
@@ -175,6 +177,11 @@ enum msm_mdp_crtc_property {
 	CRTC_PROP_IDLE_PC_STATE,
 	CRTC_PROP_CACHE_STATE,
 	CRTC_PROP_VM_REQ_STATE,
+
+	/* ASUS BSP Display +++ */
+	CRTC_PROP_FOD_MASKER, // 23
+	CRTC_PROP_FOD_SPOT, // 24
+	/* ASUS BSP Display --- */
 
 	/* total # of properties */
 	CRTC_PROP_COUNT
@@ -370,8 +377,8 @@ struct msm_roi_caps {
  * @dsc_4hsmerge_en:         Using DSC 4HS merge topology
  * @dsc_4hsmerge_padding     4HS merge DSC pair padding value in bytes
  * @dsc_4hsmerge_alignment   4HS merge DSC alignment value in bytes
- * @half_panel_pu            True for single and dual dsc encoders if partial
- *                           update sets the roi width to half of mode width
+ * @half_panel_pu            True For Dual dsc encoders if partial update is
+ *                           enabled and only one encoder needs to be used,
  *                           False in all other cases
  */
 struct msm_display_dsc_info {

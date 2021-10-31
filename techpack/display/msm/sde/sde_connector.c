@@ -19,6 +19,8 @@
 #include "sde_rm.h"
 #include "sde_vm.h"
 #include <drm/drm_probe_helper.h>
+//ASUS BSP Display +++
+#include "../dsi/dsi_anakin.h"
 
 #define BL_NODE_NAME_SIZE 32
 #define HDR10_PLUS_VSIF_TYPE_CODE      0x81
@@ -72,39 +74,17 @@ static const struct drm_prop_enum_list e_frame_trigger_mode[] = {
 	{FRAME_DONE_WAIT_POSTED_START, "posted_start"},
 };
 
-static inline struct sde_kms *_sde_connector_get_kms(struct drm_connector *conn)
-{
-	struct msm_drm_private *priv;
-
-	if (!conn || !conn->dev || !conn->dev->dev_private) {
-		SDE_ERROR("invalid connector\n");
-		return NULL;
-	}
-	priv = conn->dev->dev_private;
-	if (!priv || !priv->kms) {
-		SDE_ERROR("invalid kms\n");
-		return NULL;
-	}
-
-	return to_sde_kms(priv->kms);
-}
-
 static int sde_backlight_device_update_status(struct backlight_device *bd)
 {
 	int brightness;
 	struct dsi_display *display;
-	struct sde_connector *c_conn = bl_get_data(bd);
+	struct sde_connector *c_conn;
 	int bl_lvl;
 	struct drm_event event;
 	int rc = 0;
+	struct msm_drm_private *priv;
 	struct sde_kms *sde_kms;
 	struct sde_vm_ops *vm_ops;
-
-	sde_kms = _sde_connector_get_kms(&c_conn->base);
-	if (!sde_kms) {
-		SDE_ERROR("invalid kms\n");
-		return -EINVAL;
-	}
 
 	brightness = bd->props.brightness;
 
@@ -112,6 +92,11 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 			(bd->props.state & BL_CORE_FBBLANK) ||
 			(bd->props.state & BL_CORE_SUSPENDED))
 		brightness = 0;
+
+	c_conn = bl_get_data(bd);
+
+	priv = c_conn->base.dev->dev_private;
+	sde_kms = to_sde_kms(priv->kms);
 
 	display = (struct dsi_display *) c_conn->display;
 	if (brightness > display->panel->bl_config.bl_max_level)
@@ -188,28 +173,32 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	struct backlight_properties props;
 	struct dsi_display *display;
 	struct dsi_backlight_config *bl_config;
+	struct msm_drm_private *priv;
 	struct sde_kms *sde_kms;
 	static int display_count;
 	char bl_node_name[BL_NODE_NAME_SIZE];
 
-	sde_kms = _sde_connector_get_kms(&c_conn->base);
-	if (!sde_kms) {
-		SDE_ERROR("invalid kms\n");
+	if (!c_conn || !dev || !dev->dev || !dev->dev_private) {
+		SDE_ERROR("invalid param\n");
 		return -EINVAL;
 	} else if (c_conn->connector_type != DRM_MODE_CONNECTOR_DSI) {
 		return 0;
 	}
 
-	display = (struct dsi_display *) c_conn->display;
-	bl_config = &display->panel->bl_config;
+	priv = dev->dev_private;
+	if (!priv->kms)
+		return -EINVAL;
 
-	if (bl_config->type != DSI_BACKLIGHT_DCS &&
-		sde_in_trusted_vm(sde_kms))
+	sde_kms = to_sde_kms(priv->kms);
+	if (sde_in_trusted_vm(sde_kms))
 		return 0;
 
 	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_RAW;
 	props.power = FB_BLANK_UNBLANK;
+
+	display = (struct dsi_display *) c_conn->display;
+	bl_config = &display->panel->bl_config;
 	props.max_brightness = bl_config->brightness_max_level;
 	props.brightness = bl_config->brightness_max_level;
 	snprintf(bl_node_name, BL_NODE_NAME_SIZE, "panel%u-backlight",
@@ -223,14 +212,6 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 		return -ENODEV;
 	}
 	c_conn->thermal_max_brightness = bl_config->brightness_max_level;
-
-	/**
-	 * In TVM, thermal cooling device is not enabled. Registering with dummy
-	 * thermal device will return a NULL leading to a failure. So skip it.
-	 */
-	if (sde_in_trusted_vm(sde_kms))
-		goto done;
-
 	c_conn->n.notifier_call = sde_backlight_cooling_cb;
 	c_conn->cdev = backlight_cdev_register(dev->dev, c_conn->bl_device,
 							&c_conn->n);
@@ -241,8 +222,6 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 		c_conn->bl_device = NULL;
 		return -ENODEV;
 	}
-
-done:
 	display_count++;
 
 	return 0;
@@ -402,14 +381,18 @@ int sde_connector_get_dither_cfg(struct drm_connector *conn,
 static void sde_connector_get_avail_res_info(struct drm_connector *conn,
 		struct msm_resource_caps_info *avail_res)
 {
+	struct msm_drm_private *priv;
 	struct sde_kms *sde_kms;
 	struct drm_encoder *drm_enc = NULL;
 
-	sde_kms = _sde_connector_get_kms(conn);
-	if (!sde_kms) {
-		SDE_ERROR("invalid kms\n");
+	if (!conn || !conn->dev || !conn->dev->dev_private)
 		return;
-	}
+
+	priv = conn->dev->dev_private;
+	sde_kms = to_sde_kms(priv->kms);
+
+	if (!sde_kms)
+		return;
 
 	if (conn->state && conn->state->best_encoder)
 		drm_enc = conn->state->best_encoder;
@@ -910,13 +893,9 @@ void sde_connector_helper_bridge_disable(struct drm_connector *connector)
 	struct sde_connector *c_conn = NULL;
 	struct dsi_display *display;
 	bool poms_pending = false;
-	struct sde_kms *sde_kms;
 
-	sde_kms = _sde_connector_get_kms(connector);
-	if (!sde_kms) {
-		SDE_ERROR("invalid kms\n");
+	if (!connector)
 		return;
-	}
 
 	c_conn = to_sde_connector(connector);
 	if (c_conn->connector_type == DRM_MODE_CONNECTOR_DSI) {
@@ -935,7 +914,7 @@ void sde_connector_helper_bridge_disable(struct drm_connector *connector)
 	/* Disable ESD thread */
 	sde_connector_schedule_status_work(connector, false);
 
-	if (!sde_in_trusted_vm(sde_kms) && c_conn->bl_device) {
+	if (c_conn->bl_device) {
 		c_conn->bl_device->props.power = FB_BLANK_POWERDOWN;
 		c_conn->bl_device->props.state |= BL_CORE_FBBLANK;
 		backlight_update_status(c_conn->bl_device);
@@ -948,13 +927,9 @@ void sde_connector_helper_bridge_enable(struct drm_connector *connector)
 {
 	struct sde_connector *c_conn = NULL;
 	struct dsi_display *display;
-	struct sde_kms *sde_kms;
 
-	sde_kms = _sde_connector_get_kms(connector);
-	if (!sde_kms) {
-		SDE_ERROR("invalid kms\n");
+	if (!connector)
 		return;
-	}
 
 	c_conn = to_sde_connector(connector);
 	display = (struct dsi_display *) c_conn->display;
@@ -971,7 +946,7 @@ void sde_connector_helper_bridge_enable(struct drm_connector *connector)
 				MSM_ENC_TX_COMPLETE);
 	c_conn->allow_bl_update = true;
 
-	if (!sde_in_trusted_vm(sde_kms) && c_conn->bl_device) {
+	if (c_conn->bl_device) {
 		c_conn->bl_device->props.power = FB_BLANK_UNBLANK;
 		c_conn->bl_device->props.state &= ~BL_CORE_FBBLANK;
 		backlight_update_status(c_conn->bl_device);
@@ -1901,8 +1876,6 @@ static ssize_t _sde_debugfs_conn_cmd_tx_write(struct file *file,
 {
 	struct drm_connector *connector = file->private_data;
 	struct sde_connector *c_conn = NULL;
-	struct sde_vm_ops *vm_ops;
-	struct sde_kms *sde_kms;
 	char *input, *token, *input_copy, *input_dup = NULL;
 	const char *delim = " ";
 	char buffer[MAX_CMD_PAYLOAD_SIZE] = {0};
@@ -1913,13 +1886,8 @@ static ssize_t _sde_debugfs_conn_cmd_tx_write(struct file *file,
 		SDE_ERROR("invalid argument(s), conn %d\n", connector != NULL);
 		return -EINVAL;
 	}
-	c_conn = to_sde_connector(connector);
 
-	sde_kms = _sde_connector_get_kms(&c_conn->base);
-	if (!sde_kms) {
-		SDE_ERROR("invalid kms\n");
-		return -EINVAL;
-	}
+	c_conn = to_sde_connector(connector);
 
 	if (!c_conn->ops.cmd_transfer) {
 		SDE_ERROR("no cmd transfer support for connector name %s\n",
@@ -1930,14 +1898,6 @@ static ssize_t _sde_debugfs_conn_cmd_tx_write(struct file *file,
 	input = kzalloc(count + 1, GFP_KERNEL);
 	if (!input)
 		return -ENOMEM;
-
-	vm_ops = sde_vm_get_ops(sde_kms);
-	sde_vm_lock(sde_kms);
-	if (vm_ops && vm_ops->vm_owns_hw && !vm_ops->vm_owns_hw(sde_kms)) {
-		SDE_DEBUG("op not supported due to HW unavailablity\n");
-		rc = -EOPNOTSUPP;
-		goto end;
-	}
 
 	if (copy_from_user(input, p, count)) {
 		SDE_ERROR("copy from user failed\n");
@@ -1988,7 +1948,6 @@ static ssize_t _sde_debugfs_conn_cmd_tx_write(struct file *file,
 end1:
 	kfree(input_dup);
 end:
-	sde_vm_unlock(sde_kms);
 	kfree(input);
 	return rc;
 }
@@ -2380,6 +2339,10 @@ static int sde_connector_atomic_check(struct drm_connector *connector,
 		struct drm_atomic_state *state)
 {
 	struct sde_connector *c_conn;
+	struct sde_connector_state *c_state;
+	bool qsync_dirty = false, has_modeset = false;
+	struct drm_connector_state *new_conn_state;
+	struct drm_crtc_state *new_crtc_state = NULL;
 
 	if (!connector) {
 		SDE_ERROR("invalid connector\n");
@@ -2387,6 +2350,32 @@ static int sde_connector_atomic_check(struct drm_connector *connector,
 	}
 
 	c_conn = to_sde_connector(connector);
+	new_conn_state = drm_atomic_get_new_connector_state(state, connector);
+
+	if (!new_conn_state) {
+		SDE_ERROR("invalid connector state\n");
+		return -EINVAL;
+	}
+
+	c_state = to_sde_connector_state(new_conn_state);
+	if (new_conn_state->crtc)
+		new_crtc_state = drm_atomic_get_new_crtc_state(state,
+					new_conn_state->crtc);
+
+	has_modeset = sde_crtc_atomic_check_has_modeset(new_conn_state->state,
+						new_conn_state->crtc);
+	qsync_dirty = msm_property_is_dirty(&c_conn->property_info,
+					&c_state->property_state,
+					CONNECTOR_PROP_QSYNC_MODE);
+
+	SDE_DEBUG("has_modeset %d qsync_dirty %d\n", has_modeset, qsync_dirty);
+	if (has_modeset && qsync_dirty && new_crtc_state &&
+		!msm_is_mode_seamless_vrr(&new_crtc_state->adjusted_mode)) {
+		SDE_ERROR("invalid qsync update during modeset\n");
+		return -EINVAL;
+	}
+	new_conn_state = drm_atomic_get_new_connector_state(state, connector);
+
 	if (c_conn->ops.atomic_check)
 		return c_conn->ops.atomic_check(connector,
 				c_conn->display, state);
@@ -2489,6 +2478,14 @@ static void sde_connector_check_status_work(struct work_struct *work)
 	rc = conn->ops.check_status(&conn->base, conn->display, false);
 	mutex_unlock(&conn->lock);
 
+#if defined ASUS_ZS673KS_PROJECT || defined ASUS_PICASSO_PROJECT
+	// ASUS BSP Display  ERR FG
+	if(anakin_get_err_fg_irq_state()){
+		DSI_LOG("err fg irq state is on // call panel dead");
+		_sde_connector_report_panel_dead(conn, false);
+	}
+#endif
+
 	if (rc > 0) {
 		u32 interval;
 
@@ -2524,17 +2521,20 @@ static const struct drm_connector_helper_funcs sde_connector_helper_ops_v2 = {
 static int sde_connector_populate_mode_info(struct drm_connector *conn,
 	struct sde_kms_info *info)
 {
+	struct msm_drm_private *priv;
 	struct sde_kms *sde_kms;
 	struct sde_connector *c_conn = NULL;
 	struct drm_display_mode *mode;
 	struct msm_mode_info mode_info;
 	int rc = 0;
 
-	sde_kms = _sde_connector_get_kms(conn);
-	if (!sde_kms) {
-		SDE_ERROR("invalid kms\n");
+	if (!conn || !conn->dev || !conn->dev->dev_private) {
+		SDE_ERROR("invalid arguments\n");
 		return -EINVAL;
 	}
+
+	priv = conn->dev->dev_private;
+	sde_kms = to_sde_kms(priv->kms);
 
 	c_conn = to_sde_connector(conn);
 	if (!c_conn->ops.get_mode_info) {
@@ -3010,7 +3010,8 @@ error_free_conn:
 	return ERR_PTR(rc);
 }
 
-static int _sde_conn_enable_hw_recovery(struct drm_connector *connector)
+static int _sde_conn_hw_recovery_handler(
+		struct drm_connector *connector, bool val)
 {
 	struct sde_connector *c_conn;
 
@@ -3021,7 +3022,7 @@ static int _sde_conn_enable_hw_recovery(struct drm_connector *connector)
 	c_conn = to_sde_connector(connector);
 
 	if (c_conn->encoder)
-		sde_encoder_enable_recovery_event(c_conn->encoder);
+		sde_encoder_recovery_events_handler(c_conn->encoder, val);
 
 	return 0;
 }
@@ -3039,7 +3040,7 @@ int sde_connector_register_custom_event(struct sde_kms *kms,
 		ret = 0;
 		break;
 	case DRM_EVENT_SDE_HW_RECOVERY:
-		ret = _sde_conn_enable_hw_recovery(conn_drm);
+		ret = _sde_conn_hw_recovery_handler(conn_drm, val);
 		break;
 	default:
 		break;

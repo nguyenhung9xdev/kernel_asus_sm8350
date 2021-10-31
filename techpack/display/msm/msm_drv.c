@@ -49,6 +49,9 @@
 #include "msm_mmu.h"
 #include "sde_wb.h"
 #include "sde_dbg.h"
+#if defined(CONFIG_PXLW_IRIS) || defined(PXLW_IRIS)
+#include "dsi/iris/dsi_iris6_api.h"
+#endif
 
 /*
  * MSM driver version:
@@ -366,6 +369,7 @@ static int vblank_ctrl_queue_work(struct msm_drm_private *priv,
 					int crtc_id, bool enable)
 {
 	struct vblank_work *cur_work;
+	struct drm_crtc *crtc;
 	struct kthread_worker *worker;
 
 	if (!priv || crtc_id >= priv->num_crtcs)
@@ -374,6 +378,8 @@ static int vblank_ctrl_queue_work(struct msm_drm_private *priv,
 	cur_work = kzalloc(sizeof(*cur_work), GFP_ATOMIC);
 	if (!cur_work)
 		return -ENOMEM;
+
+	crtc = priv->crtcs[crtc_id];
 
 	kthread_init_work(&cur_work->work, vblank_ctrl_worker);
 	cur_work->crtc_id = crtc_id;
@@ -894,7 +900,7 @@ static int msm_drm_component_init(struct device *dev)
 	drm_mode_config_reset(ddev);
 
 	if (kms && kms->funcs && kms->funcs->cont_splash_config) {
-		ret = kms->funcs->cont_splash_config(kms, NULL);
+		ret = kms->funcs->cont_splash_config(kms);
 		if (ret) {
 			dev_err(dev, "kms cont_splash config failed.\n");
 			goto fail;
@@ -1624,7 +1630,29 @@ int msm_ioctl_power_ctrl(struct drm_device *dev, void *data,
 	mutex_unlock(&ctx->power_lock);
 	return rc;
 }
+#if defined(CONFIG_PXLW_IRIS)
+static int msm_ioctl_iris_operate_conf(struct drm_device *dev, void *data,
+				    struct drm_file *file)
+{
+	int ret = -EINVAL;
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_kms *kms = priv->kms;
 
+	ret = kms->funcs->iris_operate(kms, DRM_MSM_IRIS_OPERATE_CONF, data);
+	return ret;
+}
+
+static int msm_ioctl_iris_operate_tool(struct drm_device *dev, void *data,
+				    struct drm_file *file)
+{
+	int ret = -EINVAL;
+	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_kms *kms = priv->kms;
+
+	ret = kms->funcs->iris_operate(kms, DRM_MSM_IRIS_OPERATE_TOOL, data);
+	return ret;
+}
+#endif // CONFIG_PXLW_IRIS
 /**
  * msm_ioctl_display_early_wakeup - early wakeup display.
  * @dev: drm device for the ioctl
@@ -1691,6 +1719,10 @@ static const struct drm_ioctl_desc msm_ioctls[] = {
 			DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MSM_DISPLAY_HINT, msm_ioctl_display_hint_ops,
 			DRM_UNLOCKED),
+#if defined(CONFIG_PXLW_IRIS)
+	DRM_IOCTL_DEF_DRV(MSM_IRIS_OPERATE_CONF, msm_ioctl_iris_operate_conf, DRM_UNLOCKED|DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(MSM_IRIS_OPERATE_TOOL, msm_ioctl_iris_operate_tool, DRM_UNLOCKED|DRM_RENDER_ALLOW),
+#endif
 };
 
 static const struct vm_operations_struct vm_ops = {

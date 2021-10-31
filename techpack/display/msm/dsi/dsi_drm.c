@@ -197,6 +197,8 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 		return;
 	}
 
+	/* ASUS BSP Display +++ */
+	DSI_LOG("display on +++\n");
 	SDE_ATRACE_BEGIN("dsi_display_prepare");
 	rc = dsi_display_prepare(c_bridge->display);
 	if (rc) {
@@ -220,6 +222,9 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	if (rc)
 		DSI_ERR("Continuous splash pipeline cleanup failed, rc=%d\n",
 									rc);
+
+	/* ASUS BSP Display +++ */
+	DSI_LOG("display on ---\n");
 }
 
 static void dsi_bridge_enable(struct drm_bridge *bridge)
@@ -246,9 +251,6 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 		DSI_ERR("[%d] DSI display post enabled failed, rc=%d\n",
 		       c_bridge->id, rc);
 
-	if (display)
-		display->enabled = true;
-
 	if (display && display->drm_conn) {
 		sde_connector_helper_bridge_enable(display->drm_conn);
 		if (c_bridge->dsi_mode.dsi_mode_flags & DSI_MODE_FLAG_POMS)
@@ -271,9 +273,6 @@ static void dsi_bridge_disable(struct drm_bridge *bridge)
 	display = c_bridge->display;
 	private_flags =
 		bridge->encoder->crtc->state->adjusted_mode.private_flags;
-
-	if (display)
-		display->enabled = false;
 
 	if (display && display->drm_conn) {
 		display->poms_pending =
@@ -299,6 +298,8 @@ static void dsi_bridge_post_disable(struct drm_bridge *bridge)
 		return;
 	}
 
+	/* ASUS BSP Display +++ */
+	DSI_LOG("display off +++\n");
 	SDE_ATRACE_BEGIN("dsi_bridge_post_disable");
 	SDE_ATRACE_BEGIN("dsi_display_disable");
 	rc = dsi_display_disable(c_bridge->display);
@@ -318,6 +319,9 @@ static void dsi_bridge_post_disable(struct drm_bridge *bridge)
 		return;
 	}
 	SDE_ATRACE_END("dsi_bridge_post_disable");
+
+	/* ASUS BSP Display +++ */
+	DSI_LOG("display off ---\n");
 }
 
 static void dsi_bridge_mode_set(struct drm_bridge *bridge,
@@ -1158,7 +1162,7 @@ void dsi_conn_set_allowed_mode_switch(struct drm_connector *connector,
 	struct list_head *mode_list = &connector->modes;
 	struct dsi_display *disp = display;
 	struct dsi_panel *panel;
-	int mode_count = 0, rc = 0;
+	int mode_count, rc = 0;
 	struct dsi_display_mode_priv_info *dsi_mode_info, *cmp_dsi_mode_info;
 	bool allow_switch = false;
 
@@ -1168,8 +1172,7 @@ void dsi_conn_set_allowed_mode_switch(struct drm_connector *connector,
 	}
 
 	panel = disp->panel;
-	list_for_each_entry(drm_mode, &connector->modes, head)
-		mode_count++;
+	mode_count = panel->num_display_modes;
 
 	list_for_each_entry(drm_mode, &connector->modes, head) {
 
@@ -1187,8 +1190,6 @@ void dsi_conn_set_allowed_mode_switch(struct drm_connector *connector,
 		mode_list = mode_list->next;
 		cmp_mode_idx = 1;
 		list_for_each_entry(cmp_drm_mode, mode_list, head) {
-			if (&cmp_drm_mode->head == &connector->modes)
-				continue;
 			convert_to_dsi_mode(cmp_drm_mode, &dsi_mode);
 
 			rc = dsi_display_find_mode(display, &dsi_mode,
